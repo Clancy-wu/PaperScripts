@@ -230,11 +230,30 @@ run(extract_subregion_value, all_bold_files)
 # based on granger analysis
 # granger analysis
 
+
 import numpy as np
 import statsmodels.api as sm
-from statsmodels.tsa.tsatools import lagmat
 from statsmodels.tsa.stattools import adfuller
 from scipy import stats
+
+def _build_lag_matrix_1d(series: np.ndarray, p: int) -> np.ndarray:
+    """
+    Build lag matrix for a 1D series with guaranteed alignment to target series[p:].
+    Returns matrix of shape (T-p, p) with columns [lag1, lag2, ..., lagp],
+    where lagk column is series[t-k] for t = p..T-1.
+    """
+    series = np.asarray(series).ravel()
+    T = series.shape[0]
+    if p < 1:
+        raise ValueError("p must be >= 1")
+    if T <= p:
+        raise ValueError(f"Time series too short (T={T}) for p={p}")
+
+    # For each lag k, take series[p-k : T-k]
+    cols = [series[p - k : T - k] for k in range(1, p + 1)]
+    X = np.column_stack(cols)  # (T-p, p)
+    return X
+
 
 def granger_gc_with_adf_bic(
     x,
@@ -260,22 +279,15 @@ def granger_gc_with_adf_bic(
     ic : {"bic","aic"}, default="bic"
         Information criterion used for lag selection.
     adf_alpha : float, default=0.05
-        Significance threshold for reporting ADF stationarity.
+        Threshold for reporting ADF stationarity.
     adf_autolag : {"AIC","BIC","t-stat", None}, default="AIC"
         Autolag strategy used by adfuller.
     adf_regression : {"c","ct","ctt","n"}, default="c"
-        Deterministic terms in ADF regression.
-        "c" = constant only (recommended here given typical fMRI filtering).
+        Deterministic terms in ADF regression ("c" = constant).
 
     Returns
     -------
-    results : dict
-        Contains:
-          - adf_x / adf_y: ADF statistics, p-values, used lags
-          - p_selected, ic_used, ic_table
-          - R2_restricted, R2_unrestricted, delta_R2
-          - F, p_value, df_num, df_den
-          - n_obs, n_reg_restricted, n_reg_unrestricted
+    dict with ADF report, selected p, IC table, ΔR², F, p-value, dfs, etc.
     """
     # --- input checks ---
     x = np.asarray(x).ravel()
@@ -285,19 +297,17 @@ def granger_gc_with_adf_bic(
     if len(x) != len(y):
         raise ValueError("x and y must have same length")
     T = len(y)
+
     if p_max < 1:
         raise ValueError("p_max must be >= 1")
-    if T <= (2 * p_max + 5):
-        raise ValueError(
-            f"Time series too short (T={T}) for p_max={p_max}. "
-            "Reduce p_max or use longer series."
-        )
+    if T <= (p_max + 2):
+        raise ValueError(f"Time series too short (T={T}) for p_max={p_max}")
+
     ic = ic.lower()
     if ic not in ("bic", "aic"):
         raise ValueError("ic must be 'bic' or 'aic'")
 
     # --- (1) ADF stationarity checks (reported) ---
-    # Note: We *report* these, but do not exclude series based on them (common in fMRI).
     adf_x = adfuller(x, regression=adf_regression, autolag=adf_autolag)
     adf_y = adfuller(y, regression=adf_regression, autolag=adf_autolag)
     adf_report = {
@@ -320,15 +330,18 @@ def granger_gc_with_adf_bic(
         "autolag": adf_autolag,
     }
 
-    # --- helpers: fit restricted/unrestricted for a given p ---
+    # --- helper: fit restricted/unrestricted for a given p (guaranteed alignment) ---
     def _fit_models_for_p(p: int):
-        # Use trim='forward' to guarantee alignment:
-        # rows correspond to t=p..T-1; target is y[p:]
-        lagged_y = lagmat(y, maxlag=p, trim="forward")  # (T-p, p)
-        lagged_x = lagmat(x, maxlag=p, trim="forward")  # (T-p, p)
-        Y = y[p:]  # (T-p,)
+        lagged_y = _build_lag_matrix_1d(y, p)  # (T-p, p)
+        lagged_x = _build_lag_matrix_1d(x, p)  # (T-p, p)
+        Y = y[p:]                              # (T-p,)
+
+        # Guaranteed alignment checks
         if lagged_y.shape[0] != Y.shape[0] or lagged_x.shape[0] != Y.shape[0]:
-            raise RuntimeError("Lag/target misalignment; check lag construction.")
+            raise RuntimeError(
+                f"Lag/target misalignment even after manual construction: "
+                f"Y={Y.shape}, lagged_y={lagged_y.shape}, lagged_x={lagged_x.shape}"
+            )
 
         X_r = sm.add_constant(lagged_y, has_constant="add")
         X_u = sm.add_constant(np.hstack([lagged_y, lagged_x]), has_constant="add")
@@ -337,7 +350,7 @@ def granger_gc_with_adf_bic(
         model_u = sm.OLS(Y, X_u).fit()
         return Y, X_r, X_u, model_r, model_u
 
-    # --- (2) Select lag order via IC (AIC/BIC), using unrestricted model ---
+    # --- (2) Select lag order via IC using unrestricted model ---
     ic_table = []
     best_p = None
     best_ic = np.inf
@@ -345,13 +358,12 @@ def granger_gc_with_adf_bic(
     for p in range(1, p_max + 1):
         Y, X_r, X_u, model_r, model_u = _fit_models_for_p(p)
         ic_value = float(model_u.bic if ic == "bic" else model_u.aic)
-        ic_table.append({"p": p, ic.upper(): ic_value, "n_obs": int(Y.shape[0])})
+        ic_table.append({"p": int(p), ic.upper(): ic_value, "n_obs": int(Y.shape[0])})
 
         if ic_value < best_ic:
             best_ic = ic_value
             best_p = p
 
-    # Safety
     if best_p is None:
         raise RuntimeError("Failed to select lag order; check inputs.")
 
@@ -369,10 +381,8 @@ def granger_gc_with_adf_bic(
     df_num = int(q)
     df_den = int(model_u.df_resid)
 
-    # Nested-model F test (joint significance of lagged X terms)
     F = ((ssr_r - ssr_u) / df_num) / (ssr_u / df_den)
-    # Use survival function for numerical stability
-    p_value = float(stats.f.sf(F, df_num, df_den))
+    p_value = float(stats.f.sf(F, df_num, df_den))  # stable tail prob
 
     return {
         "adf": adf_report,
@@ -470,9 +480,11 @@ def extract_subregion_value(bold_file):
                 }
 
     return np.savez(f'granger_analysis_results_revise/{sub_name}_run-{sub_run}.npz', **all_dict)
-    
+
+# granger analysis
+weight_map_file = pd.read_csv('association_uniformity_corrp_sig0.001_sscale_weight_hemi-both.csv')
+weight_map = weight_map_file['weight'].values # (20484,)
 all_bold_files = glob(f'/home/clancy/ssd/SleepDisfunction/xcpd_rest_nifti/*/func/*_task-rest_run-*_space-MNI152NLin2009cAsym_res-2_desc-denoisedSmoothed_bold.nii.gz')
-run(compute_granger_results_from_file, all_bold_files)
-
-
+run(extract_subregion_value, all_bold_files)
+print('finished.')
 
