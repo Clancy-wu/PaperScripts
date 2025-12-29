@@ -228,70 +228,173 @@ run(extract_subregion_value, all_bold_files)
 
 # 2. Causal correlations between time series of the weight map and subcortical nuclei
 # based on granger analysis
+# granger analysis
+
 import numpy as np
 import statsmodels.api as sm
 from statsmodels.tsa.tsatools import lagmat
-def granger_delta_r2(x, y, p):
+from statsmodels.tsa.stattools import adfuller
+from scipy import stats
+
+def granger_gc_with_adf_bic(
+    x,
+    y,
+    p_max=5,
+    ic="bic",
+    adf_alpha=0.05,
+    adf_autolag="AIC",
+    adf_regression="c",
+):
     """
-    Compute Granger test, ΔR² and F-test for X -> Y with lag p.
-    x, y : 1D numpy arrays of same length T
-    p : lag order (integer >= 1)
-    Returns dict with R2_restricted, R2_unrestricted, delta_R2, F, p_value, df_denom, df_num
+    Granger causality (X -> Y) on preprocessed time series with:
+      (1) ADF stationarity checks (reported, not used for exclusion),
+      (2) lag order selection via a single information criterion (default: BIC),
+      (3) nested OLS GC test outputting ΔR², F, p-value.
+
+    Parameters
+    ----------
+    x, y : array-like, shape (T,)
+        Preprocessed 1D time series of equal length.
+    p_max : int, default=5
+        Maximum lag order to consider in IC search (lags 1..p_max).
+    ic : {"bic","aic"}, default="bic"
+        Information criterion used for lag selection.
+    adf_alpha : float, default=0.05
+        Significance threshold for reporting ADF stationarity.
+    adf_autolag : {"AIC","BIC","t-stat", None}, default="AIC"
+        Autolag strategy used by adfuller.
+    adf_regression : {"c","ct","ctt","n"}, default="c"
+        Deterministic terms in ADF regression.
+        "c" = constant only (recommended here given typical fMRI filtering).
+
+    Returns
+    -------
+    results : dict
+        Contains:
+          - adf_x / adf_y: ADF statistics, p-values, used lags
+          - p_selected, ic_used, ic_table
+          - R2_restricted, R2_unrestricted, delta_R2
+          - F, p_value, df_num, df_den
+          - n_obs, n_reg_restricted, n_reg_unrestricted
     """
+    # --- input checks ---
     x = np.asarray(x).ravel()
     y = np.asarray(y).ravel()
+    if x.ndim != 1 or y.ndim != 1:
+        raise ValueError("x and y must be 1D arrays")
     if len(x) != len(y):
         raise ValueError("x and y must have same length")
     T = len(y)
-    if p < 1:
-        raise ValueError("p must be >= 1")
+    if p_max < 1:
+        raise ValueError("p_max must be >= 1")
+    if T <= (2 * p_max + 5):
+        raise ValueError(
+            f"Time series too short (T={T}) for p_max={p_max}. "
+            "Reduce p_max or use longer series."
+        )
+    ic = ic.lower()
+    if ic not in ("bic", "aic"):
+        raise ValueError("ic must be 'bic' or 'aic'")
 
-    lagged_y = lagmat(y, maxlag=p, trim='both')  
-    lagged_x = lagmat(x, maxlag=p, trim='both')
+    # --- (1) ADF stationarity checks (reported) ---
+    # Note: We *report* these, but do not exclude series based on them (common in fMRI).
+    adf_x = adfuller(x, regression=adf_regression, autolag=adf_autolag)
+    adf_y = adfuller(y, regression=adf_regression, autolag=adf_autolag)
+    adf_report = {
+        "x": {
+            "stat": float(adf_x[0]),
+            "p_value": float(adf_x[1]),
+            "used_lag": int(adf_x[2]),
+            "nobs": int(adf_x[3]),
+            "is_stationary_at_alpha": bool(adf_x[1] < adf_alpha),
+        },
+        "y": {
+            "stat": float(adf_y[0]),
+            "p_value": float(adf_y[1]),
+            "used_lag": int(adf_y[2]),
+            "nobs": int(adf_y[3]),
+            "is_stationary_at_alpha": bool(adf_y[1] < adf_alpha),
+        },
+        "alpha": float(adf_alpha),
+        "regression": adf_regression,
+        "autolag": adf_autolag,
+    }
 
-    Y = y[p:]   # length = T - p
+    # --- helpers: fit restricted/unrestricted for a given p ---
+    def _fit_models_for_p(p: int):
+        # Use trim='forward' to guarantee alignment:
+        # rows correspond to t=p..T-1; target is y[p:]
+        lagged_y = lagmat(y, maxlag=p, trim="forward")  # (T-p, p)
+        lagged_x = lagmat(x, maxlag=p, trim="forward")  # (T-p, p)
+        Y = y[p:]  # (T-p,)
+        if lagged_y.shape[0] != Y.shape[0] or lagged_x.shape[0] != Y.shape[0]:
+            raise RuntimeError("Lag/target misalignment; check lag construction.")
 
-    # Create design matrices
-    # Restricted: constant + lagged_y
-    X_r = sm.add_constant(lagged_y)
-    # Unrestricted: constant + lagged_y + lagged_x
-    X_u = sm.add_constant(np.hstack([lagged_y, lagged_x]))
-    # Fit OLS on same Y
-    model_r = sm.OLS(Y, X_r).fit()
-    model_u = sm.OLS(Y, X_u).fit()
-    # R² values
-    R2_r = model_r.rsquared
-    R2_u = model_u.rsquared
+        X_r = sm.add_constant(lagged_y, has_constant="add")
+        X_u = sm.add_constant(np.hstack([lagged_y, lagged_x]), has_constant="add")
+
+        model_r = sm.OLS(Y, X_r).fit()
+        model_u = sm.OLS(Y, X_u).fit()
+        return Y, X_r, X_u, model_r, model_u
+
+    # --- (2) Select lag order via IC (AIC/BIC), using unrestricted model ---
+    ic_table = []
+    best_p = None
+    best_ic = np.inf
+
+    for p in range(1, p_max + 1):
+        Y, X_r, X_u, model_r, model_u = _fit_models_for_p(p)
+        ic_value = float(model_u.bic if ic == "bic" else model_u.aic)
+        ic_table.append({"p": p, ic.upper(): ic_value, "n_obs": int(Y.shape[0])})
+
+        if ic_value < best_ic:
+            best_ic = ic_value
+            best_p = p
+
+    # Safety
+    if best_p is None:
+        raise RuntimeError("Failed to select lag order; check inputs.")
+
+    # --- (3) Final GC test at selected lag ---
+    Y, X_r, X_u, model_r, model_u = _fit_models_for_p(best_p)
+
+    R2_r = float(model_r.rsquared)
+    R2_u = float(model_u.rsquared)
     delta_R2 = R2_u - R2_r
-    # Compute F-stat (manually) for the joint test that coefficients of lagged_x are zero
-    # Use SSR difference and degrees of freedom
-    ssr_r = model_r.ssr
-    ssr_u = model_u.ssr
-    df_r = model_r.df_resid
-    df_u = model_u.df_resid
-    q = X_u.shape[1] - X_r.shape[1]  # number of restrictions = number of lagged_x columns
-    df_num = q
-    df_den = int(df_u)   # residual dof for unrestricted
-    F = ((ssr_r - ssr_u) / q) / (ssr_u / df_den)
-    from scipy import stats
-    p_value = 1 - stats.f.cdf(F, df_num, df_den)
 
-    return dict(
-        R2_restricted=R2_r,
-        R2_unrestricted=R2_u,
-        delta_R2=delta_R2,
-        ssr_restricted=ssr_r,
-        ssr_unrestricted=ssr_u,
-        F=F,
-        p_value=p_value,
-        df_num=df_num,
-        df_den=df_den,
-        n_obs = Y.shape[0],
-        n_reg_restricted = X_r.shape[1],
-        n_reg_unrestricted = X_u.shape[1]
-    )
+    ssr_r = float(model_r.ssr)
+    ssr_u = float(model_u.ssr)
 
-def compute_granger_results_from_file(bold_file):
+    q = X_u.shape[1] - X_r.shape[1]  # number of lagged-X terms (should equal p)
+    df_num = int(q)
+    df_den = int(model_u.df_resid)
+
+    # Nested-model F test (joint significance of lagged X terms)
+    F = ((ssr_r - ssr_u) / df_num) / (ssr_u / df_den)
+    # Use survival function for numerical stability
+    p_value = float(stats.f.sf(F, df_num, df_den))
+
+    return {
+        "adf": adf_report,
+        "ic_used": ic.upper(),
+        "p_selected": int(best_p),
+        "ic_table": ic_table,
+        "R2_restricted": R2_r,
+        "R2_unrestricted": R2_u,
+        "delta_R2": float(delta_R2),
+        "ssr_restricted": ssr_r,
+        "ssr_unrestricted": ssr_u,
+        "F": float(F),
+        "p_value": p_value,
+        "df_num": df_num,
+        "df_den": df_den,
+        "n_obs": int(Y.shape[0]),
+        "n_reg_restricted": int(X_r.shape[1]),
+        "n_reg_unrestricted": int(X_u.shape[1]),
+    }
+
+
+def extract_subregion_value(bold_file):
     bn_atlas = '/home/clancy/TemplateFlow/tpl-MNI152NLin2009cAsym/BN_Atlas246_2mm_tpl-MNI152NLin2009cAsym.nii.gz'
     bn_data = image.get_data(bn_atlas)
     bold_data = image.get_data(bold_file) # (97, 115, 97, x)
@@ -326,32 +429,33 @@ def compute_granger_results_from_file(bold_file):
     # ganger analysis: p=10, lag order=10
     # only focus on 10 significant subcortical regions
     # dlPu=[]; vmPu=[]; PPtha=[]; cHipp=[]; GP=[]; Stha=[]; dCa=[]; cTtha=[]; Otha=[]; vCa=[];
-    dlPu_map = granger_delta_r2(np.array(dlPu), weigth_mean, p=10) 
-    map_dlPu = granger_delta_r2(weigth_mean, np.array(dlPu), p=10) 
-    vmPu_map = granger_delta_r2(np.array(vmPu), weigth_mean, p=10) 
-    map_vmPu = granger_delta_r2(weigth_mean, np.array(vmPu), p=10) 
-    PPtha_map = granger_delta_r2(np.array(PPtha), weigth_mean, p=10) 
-    map_PPtha = granger_delta_r2(weigth_mean, np.array(PPtha), p=10) 
-    cHipp_map = granger_delta_r2(np.array(cHipp), weigth_mean, p=10) 
-    map_cHipp = granger_delta_r2(weigth_mean, np.array(cHipp), p=10) 
-    GP_map = granger_delta_r2(np.array(GP), weigth_mean, p=10) 
-    map_GP = granger_delta_r2(weigth_mean, np.array(GP), p=10) 
-    Stha_map = granger_delta_r2(np.array(Stha), weigth_mean, p=10) 
-    map_Stha = granger_delta_r2(weigth_mean, np.array(Stha), p=10) 
-    dCa_map = granger_delta_r2(np.array(dCa), weigth_mean, p=10) 
-    map_dCa = granger_delta_r2(weigth_mean, np.array(dCa), p=10) 
-    cTtha_map = granger_delta_r2(np.array(cTtha), weigth_mean, p=10) 
-    map_cTtha = granger_delta_r2(weigth_mean, np.array(cTtha), p=10) 
-    Otha_map = granger_delta_r2(np.array(Otha), weigth_mean, p=10) 
-    map_Otha = granger_delta_r2(weigth_mean, np.array(Otha), p=10) 
-    vCa_map = granger_delta_r2(np.array(vCa), weigth_mean, p=10) 
-    map_vCa = granger_delta_r2(weigth_mean, np.array(vCa), p=10) 
+    dlPu_map = granger_gc_with_adf_bic(np.array(dlPu), weigth_mean) 
+    map_dlPu = granger_gc_with_adf_bic(weigth_mean, np.array(dlPu)) 
+    vmPu_map = granger_gc_with_adf_bic(np.array(vmPu), weigth_mean) 
+    map_vmPu = granger_gc_with_adf_bic(weigth_mean, np.array(vmPu)) 
+    PPtha_map = granger_gc_with_adf_bic(np.array(PPtha), weigth_mean) 
+    map_PPtha = granger_gc_with_adf_bic(weigth_mean, np.array(PPtha)) 
+    cHipp_map = granger_gc_with_adf_bic(np.array(cHipp), weigth_mean) 
+    map_cHipp = granger_gc_with_adf_bic(weigth_mean, np.array(cHipp)) 
+    GP_map = granger_gc_with_adf_bic(np.array(GP), weigth_mean) 
+    map_GP = granger_gc_with_adf_bic(weigth_mean, np.array(GP)) 
+    Stha_map = granger_gc_with_adf_bic(np.array(Stha), weigth_mean) 
+    map_Stha = granger_gc_with_adf_bic(weigth_mean, np.array(Stha)) 
+    dCa_map = granger_gc_with_adf_bic(np.array(dCa), weigth_mean) 
+    map_dCa = granger_gc_with_adf_bic(weigth_mean, np.array(dCa)) 
+    cTtha_map = granger_gc_with_adf_bic(np.array(cTtha), weigth_mean) 
+    map_cTtha = granger_gc_with_adf_bic(weigth_mean, np.array(cTtha)) 
+    Otha_map = granger_gc_with_adf_bic(np.array(Otha), weigth_mean) 
+    map_Otha = granger_gc_with_adf_bic(weigth_mean, np.array(Otha)) 
+    vCa_map = granger_gc_with_adf_bic(np.array(vCa), weigth_mean) 
+    map_vCa = granger_gc_with_adf_bic(weigth_mean, np.array(vCa)) 
 
     # infomation
     sub_name = re.findall(r'(sub-\d+)_task', os.path.basename(bold_file))[0]
     sub_run = re.findall(r'run-(\d+)_space', os.path.basename(bold_file))[0]
     sub_information = dict(subject=sub_name, run=sub_run)
 
+    #   vCa=[];
     all_dict = {'information': sub_information, 
                 'dlPu_map': dlPu_map, 'map_dlPu': map_dlPu, 
                 'vmPu_map': vmPu_map, 'map_vmPu': map_vmPu, 
@@ -365,8 +469,8 @@ def compute_granger_results_from_file(bold_file):
                 'vCa_map': vCa_map, 'map_vCa': map_vCa
                 }
 
-    return np.savez(f'granger_analysis_results/{sub_name}_run-{sub_run}.npz', **all_dict)
-
+    return np.savez(f'granger_analysis_results_revise/{sub_name}_run-{sub_run}.npz', **all_dict)
+    
 all_bold_files = glob(f'/home/clancy/ssd/SleepDisfunction/xcpd_rest_nifti/*/func/*_task-rest_run-*_space-MNI152NLin2009cAsym_res-2_desc-denoisedSmoothed_bold.nii.gz')
 run(compute_granger_results_from_file, all_bold_files)
 
