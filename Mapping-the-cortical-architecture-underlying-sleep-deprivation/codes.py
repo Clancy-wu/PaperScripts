@@ -5,7 +5,7 @@ import itertools
 from nilearn import image, datasets, surface
 
 #############################################
-# The brain dysfunctional map for the two masks were computed in a public dataset, respectively.
+# FC analysis between 1000 healthy individuals and meta-analytic seeds
 #############################################
 # 1. create normative fzmap from GSP 1,000 subjects
 seed_files = ['meta_mask/deprivation_association-test_z_FDR_0.01_mask_fsl.nii.gz',
@@ -25,20 +25,20 @@ os.system('randomise -i association_gsp1000_fzmap.nii -o association_OneSampT -1
 os.system('randomise -i uniformity_gsp1000_fzmap.nii -o uniformity_OneSampT -1 -T -n 1000')
 
 #############################################
-# Optimizing the brain dysfunctional map by merging the two lesions. 
+# generating SD-CWM
 #############################################
 import pandas as pd
 import numpy as np
 fsaverage = datasets.load_fsaverage('fsaverage5')
 def ss_scale(arr):
     # standardize scale
-    scaled = (arr - arr.mean()) / arr.std()
+    scaled = (arr - arr.mean()) / arr.std()  # z-score standardization format
     return scaled
 
 def create_weight_map_from_pvalue_tvalue(pvalue_file, tvalue_file):
     pvalue_img = surface.SurfaceImage.from_volume(fsaverage["pial"], pvalue_file, inner_mesh=fsaverage["white_matter"]) # 20484
     pvalue_lh = pvalue_img.data.parts['left']; pvalue_rh = pvalue_img.data.parts['right']
-
+    # tvalue[p_value > 0.999]
     tvalue_img = surface.SurfaceImage.from_volume(fsaverage["pial"], tvalue_file, inner_mesh=fsaverage["white_matter"]) # 20484
     tvalue_lh = tvalue_img.data.parts['left']; tvalue_rh = tvalue_img.data.parts['right']
     tvalue_lh_sig = np.zeros_like(tvalue_lh); tvalue_rh_sig = np.zeros_like(tvalue_rh)
@@ -66,14 +66,14 @@ medial_wall_lh = pd.read_csv('/home/clancy/TemplateFlow/ENIGMA_surface/fsa5_lh_m
 medial_wall_rh = pd.read_csv('/home/clancy/TemplateFlow/ENIGMA_surface/fsa5_rh_mask.csv', header=None)
 medial_wall = np.append(medial_wall_lh[0].values, medial_wall_rh[0].values) 
 both_mask_data[medial_wall==0] = 0
-pd.DataFrame(both_mask_data, columns=['weight']).to_csv('association_uniformity_corrp_sig0.001_sscale_weight_hemi-both.csv', index=None)
+pd.DataFrame(both_mask_data, columns=['weight']).to_csv('SD-CWM.csv', index=None)
 
 #############################################
 # Result 1: 
 #       Validations of ALFF and TASK in local participants
 #############################################
 def alff_compute_with_weight(alff_file):
-    both_weight_file = pd.read_csv('association_uniformity_corrp_sig0.001_sscale_weight_hemi-both.csv')
+    both_weight_file = pd.read_csv('SD-CWM.csv')
     both_weight_data = both_weight_file['weight'].values
 
     alff_img = surface.SurfaceImage.from_volume(fsaverage["pial"], alff_file, inner_mesh=fsaverage["white_matter"]) # 20484
@@ -85,7 +85,7 @@ def alff_compute_with_weight(alff_file):
     return np.append(np.array([sub_name, sub_run]), sub_alff_mean)
 
 def task_compute_wtih_weight(task_file):
-    both_weight_file = pd.read_csv('association_uniformity_corrp_sig0.001_sscale_weight_hemi-both.csv')
+    both_weight_file = pd.read_csv('SD-CWM.csv')
     both_weight_data = both_weight_file['weight'].values
 
     task_img = surface.SurfaceImage.from_volume(fsaverage["pial"], task_file, inner_mesh=fsaverage["white_matter"]) # 20484
@@ -96,21 +96,22 @@ def task_compute_wtih_weight(task_file):
     sub_run = re.findall(r'run-(\d+)_con', os.path.basename(task_file))[0]
     return np.append(np.array([sub_name, sub_run]), sub_task_mean)
 
+# sub-xxx: subject name. run-01: RW. run-02: SD
 alff_dir = '/home/clancy/ssd/SleepDisfunction/xcpd_rest_nifti/sub-*/func/sub-*_task-rest_run-*_space-MNI152NLin2009cAsym_res-2_stat-alff_desc-smooth_boldmap.nii.gz'
-alff_files = glob(alff_dir) # 56
+alff_files = glob(alff_dir) # 60
 
 task_dir = '/home/clancy/ssd/SleepDisfunction/STWMdata/AvgActive/sub-*_task-rdm_run-*_con_z.nii.gz'
-task_files = glob(task_dir) # 56
+task_files = glob(task_dir) # 60
 
 run(alff_compute_with_weight, alff_files)
 run(task_compute_wtih_weight, task_files)
 
 #############################################
 # Result 2:
-#       Architectures of the weight map
+#       Architectures of the SD-CWM
 #############################################
 # 1. & 2. cortical regions and functional networks
-weight_map_file = pd.read_csv('association_uniformity_corrp_sig0.001_sscale_weight_hemi-both.csv')
+weight_map_file = pd.read_csv('SD-CWM.csv')
 weight_map = weight_map_file['weight'].values # (20484,)
 bn_lh_file = 'lh.fs5.BN_Atlas.label.gii'
 bn_lh = surface.load_surf_data(bn_lh_file)
@@ -127,9 +128,9 @@ df = pd.DataFrame({'bn_label': result_index, 'value': result_mean})
 df = df.sort_values('value')
 df.to_csv('weight_map_sort_by_bn.csv', index=None)
 
-# 3. associations between neural transmitters and the weight map
+# 3. associations between neural transmitters and the SD-CWM within non-zero vertices
 from neuromaps import images, nulls, stats
-weight_map = pd.read_csv('association_uniformity_corrp_sig0.001_sscale_weight_hemi-both.csv')
+weight_map = pd.read_csv('SD-CWM.csv')
 weight_data = weight_map['weight'].values
 rotated = nulls.alexander_bloch(weight_data, atlas='fsaverage', density='10k',
                                 n_perm=5000, seed=1234)
@@ -182,9 +183,9 @@ run(compute_alff_diff_from_subject, all_subs)
 
 #############################################
 # Result 3:
-#       Subcortical regions connecting to the weight map
+#       Directional influence between the SD-CWM and subcortical nuclei
 #############################################
-# 1. Correlations between ALFF changes in the weight map and subcortical nuclei
+# 1. Correlations between ALFF changes in the SD-CWM and subcortical nuclei
 def extract_subregion_value(bold_file):
     bn_atlas = '/home/clancy/TemplateFlow/tpl-MNI152NLin2009cAsym/BN_Atlas246_2mm_tpl-MNI152NLin2009cAsym.nii.gz'
     bn_data = image.get_data(bn_atlas)
@@ -221,27 +222,19 @@ def extract_subregion_value(bold_file):
     # 18 subregions 
     return sub_name, sub_run, weigth_mean, mAmyg, lAmyg, rHipp, cHipp, vCa, GP, NAC, vmPu, dCa, dlPu, mPFtha, mPMtha, Stha, rTtha, PPtha, Otha, cTtha, lPFtha
 
-weight_map_file = pd.read_csv('association_uniformity_corrp_sig0.001_sscale_weight_hemi-both.csv')
+weight_map_file = pd.read_csv('SD-CWM.csv')
 weight_map = weight_map_file['weight'].values 
+# sub-xxx: subject name. run-01: RW. run-02: SD. 
 all_bold_files = glob(f'/home/clancy/ssd/SleepDisfunction/xcpd_rest_nifti/*/func/*_task-rest_run-*_space-MNI152NLin2009cAsym_res-2_stat-alff_desc-smooth_boldmap.nii.gz')
 run(extract_subregion_value, all_bold_files)
 
-# 2. Causal correlations between time series of the weight map and subcortical nuclei
-# based on granger analysis
-# granger analysis
-
-
+# 2. Granger causality analysis between the SD-CWM and subcortical nuclei
 import numpy as np
 import statsmodels.api as sm
 from statsmodels.tsa.stattools import adfuller
 from scipy import stats
 
 def _build_lag_matrix_1d(series: np.ndarray, p: int) -> np.ndarray:
-    """
-    Build lag matrix for a 1D series with guaranteed alignment to target series[p:].
-    Returns matrix of shape (T-p, p) with columns [lag1, lag2, ..., lagp],
-    where lagk column is series[t-k] for t = p..T-1.
-    """
     series = np.asarray(series).ravel()
     T = series.shape[0]
     if p < 1:
@@ -254,14 +247,13 @@ def _build_lag_matrix_1d(series: np.ndarray, p: int) -> np.ndarray:
     X = np.column_stack(cols)  # (T-p, p)
     return X
 
-
 def granger_gc_with_adf_bic(
     x,
     y,
-    p_max=5,
+    p_max=5, # 5 volumes are about 10s, which is suitable for BOLD signals 
     ic="bic",
     adf_alpha=0.05,
-    adf_autolag="AIC",
+    adf_autolag="BIC",
     adf_regression="c",
 ):
     """
@@ -280,7 +272,7 @@ def granger_gc_with_adf_bic(
         Information criterion used for lag selection.
     adf_alpha : float, default=0.05
         Threshold for reporting ADF stationarity.
-    adf_autolag : {"AIC","BIC","t-stat", None}, default="AIC"
+    adf_autolag : {"AIC","BIC","t-stat", None}, default="BIC"
         Autolag strategy used by adfuller.
     adf_regression : {"c","ct","ctt","n"}, default="c"
         Deterministic terms in ADF regression ("c" = constant).
@@ -436,7 +428,6 @@ def extract_subregion_value(bold_file):
     weight_data = alff_map_data * weight_map[:, np.newaxis]
     weigth_mean = weight_data.mean(axis=0)
 
-    # ganger analysis: p=10, lag order=10
     # only focus on 10 significant subcortical regions
     # dlPu=[]; vmPu=[]; PPtha=[]; cHipp=[]; GP=[]; Stha=[]; dCa=[]; cTtha=[]; Otha=[]; vCa=[];
     dlPu_map = granger_gc_with_adf_bic(np.array(dlPu), weigth_mean) 
@@ -482,9 +473,56 @@ def extract_subregion_value(bold_file):
     return np.savez(f'granger_analysis_results_revise/{sub_name}_run-{sub_run}.npz', **all_dict)
 
 # granger analysis
-weight_map_file = pd.read_csv('association_uniformity_corrp_sig0.001_sscale_weight_hemi-both.csv')
+weight_map_file = pd.read_csv('SD-CWM.csv')
 weight_map = weight_map_file['weight'].values # (20484,)
 all_bold_files = glob(f'/home/clancy/ssd/SleepDisfunction/xcpd_rest_nifti/*/func/*_task-rest_run-*_space-MNI152NLin2009cAsym_res-2_desc-denoisedSmoothed_bold.nii.gz')
 run(extract_subregion_value, all_bold_files)
 print('finished.')
 
+##################################
+# extract r2, F, pvalue, lag p
+def extract_sig_value_from_dict(data_dict):
+    return data_dict.item().get('delta_R2'), data_dict.item().get('F'), data_dict.item().get('p_value'), data_dict.item().get('p_selected')
+
+def extract_granger_value(npz_file):
+    data = np.load(npz_file, allow_pickle=True)
+    sub_name = data['information'].item().get('subject')
+    sub_run = data['information'].item().get('run')
+    all_items = [
+                'dlPu_map', 'map_dlPu', 
+                'vmPu_map', 'map_vmPu',  
+                'PPtha_map', 'map_PPtha', 
+                'cHipp_map', 'map_cHipp',  
+                'GP_map', 'map_GP',  
+                'Stha_map', 'map_Stha',  
+                'dCa_map', 'map_dCa',  
+                'cTtha_map', 'map_cTtha',  
+                'Otha_map', 'map_Otha',  
+                'vCa_map', 'map_vCa', 
+                ]
+    item_result = []
+    for item in all_items:
+        item_result.append(np.append(item, extract_sig_value_from_dict(data[item])))
+
+    df = pd.DataFrame(np.vstack(item_result), columns=['region', 'delta_R2', 'F', 'p_value', 'p_selected'])
+    df['subject'] = sub_name
+    df['run'] = sub_run
+    return df
+
+all_files = glob(f'granger_analysis_results_revise/*.npz')
+future_results = run(extract_granger_value, all_files)
+final_df = pd.concat(future_results, axis=0, ignore_index=True)
+Type=[]; Direct=[]
+for i in final_df['region'].values:
+    i_info = i.split('_')
+    if i_info[0]=='map':
+        Type.append(i_info[1])
+        Direct.append('top') # from cortex to subcortex
+    elif i_info[1]=='map':
+        Type.append(i_info[0])
+        Direct.append('down') # from subcortex to cortex
+    else:
+        pass
+final_df['type'] = Type; final_df['direct'] = Direct
+final_df.to_csv('granger_analysis_10_subregions.csv', index=None)
+# END. @author: Kang Wu, Post Doctor, Beijing Anding Hospital, clancy_wu@126.com 
