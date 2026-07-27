@@ -19,3 +19,6 @@ Ai M#, **Wu K#**, Song M#, et al. The Role of Resting-state Functional Connectiv
 Coeruleus in Attention Decline After Acute Sleep Deprivation. Sleep Medicine. 2026 Jan 
 7:108769.
 
+## Multiscale-architecture-of-a-thalamocortical-vigilance-state-linked-to-behavioral-instability-after-sleep-deprivation
+
+
