@@ -1,0 +1,27 @@
+{
+  "join_keys_condition_level": [
+    "sub",
+    "session"
+  ],
+  "join_keys_delta_level": [
+    "sub",
+    "session"
+  ],
+  "join_keys_double_delta_level": [
+    "sub"
+  ],
+  "recommended_primary_eeg_markers": [
+    "global_theta_mean_db",
+    "posterior_alpha_mean_db",
+    "global_theta_alpha_ratio_mean_linear",
+    "global_theta_cv_linear",
+    "posterior_alpha_cv_linear",
+    "global_theta_alpha_ratio_cv_linear"
+  ],
+  "main_contrast_definition": "delta = Task - CloseEye; double_delta = delta_SD - delta_RW",
+  "recommended_downstream_statistics": [
+    "double_delta_EEG ~ double_delta_rt_cv",
+    "double_delta_EEG ~ double_delta_hr_cv",
+    "double_delta_EEG ~ double_delta_FO"
+  ]
+}
