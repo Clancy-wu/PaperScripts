@@ -265,6 +265,29 @@ ggplot(df_filtered_plot, aes(x = reorder(neurotransmitter, -rValue), y = rValue,
 
 
 # Figure 5E ---------------------------------------------------------------
+library(neuromapr)
+library(freesurferformats)
+library(data.table)
+library(magrittr)
+
+compare_two_whole_brain_maps <- function(map_1, map_2){
+  ## Moran spectral randomization to test spatial correlations between maps. 
+  bn_info <- read.csv('atlas/brainnetome.csv')
+  bn_coords <- as.matrix(bn_info[, c("x.mni", "y.mni", "z.mni")]) # maps should in BN space
+  ## Construct the whole-brain Euclidean distance matrix
+  distmat <- as.matrix(
+    dist(bn_coords, method = "euclidean")
+    )# Euclidean distance in MNI space, measured in millimetres
+  ## Ordinary whole-brain correlation
+  ordinary_test <- cor.test(map_1, map_2, method = "pearson", use = "complete.obs" )
+  observed_r <- unname(ordinary_test$estimate)
+  parametric_p <- ordinary_test$p.value
+  # Whole-brain Moran spatial-null test
+  moran_result <- compare_maps(
+    x = map_1, y = map_2, method = "pearson", null_method = "burt2020", distmat = distmat,
+    n_perm = 5000L, seed = 1234L, verbose = TRUE ) 
+  return(moran_result)
+}
 
 tvs = read.csv("all_dynamic_brain_states/state_3_mean.txt",  header = FALSE)
 tvs_num <- tvs$V1
@@ -308,6 +331,7 @@ ggplot(., aes(x = X, y = Y, fill=Label) ) +
   ) +
   labs(x = NULL, y = NULL)
 
+compare_two_whole_brain_maps(a4b2_num, tvs_num) # p=0.052
 
 # Figure 5F ---------------------------------------------------------------
 
@@ -330,6 +354,7 @@ tibble(X = gabaa_num, Y = tvs_num, Label = bn_info$Yeo_7network) %>%
   ) +
   labs(x = NULL, y = NULL)
 
+compare_two_whole_brain_maps(gabaa_num, tvs_num) # p=0.096
 
 # Figure 5G ---------------------------------------------------------------
 
@@ -352,12 +377,13 @@ tibble(X = scale(a4b2_num) - scale(gabaa_num), Y = tvs_num, Label = bn_info$Yeo_
   ) +
   labs(x = NULL, y = NULL)
 
+compare_two_whole_brain_maps(scale(a4b2_num) - scale(gabaa_num), tvs_num) # p=0.032 
 
 # Figure 5H ---------------------------------------------------------------
 
 #### Gene Expression
 pls_df <- read.csv('tvs_gene_results/pls1_roi_scores.csv')
-cor.test(pls_df$pls1_score, pls_df$tvs_value, method = 'pearson') # r=0.28, p<0.001
+cor.test(pls_df$pls1_score, pls_df$tvs_value, method = 'pearson') # r=0.28, 
 
 tibble(X = pls_df$pls1_score, Y = pls_df$tvs_value, Label = bn_info$Yeo_7network) %>%
   ggplot(., aes(x = X, y = Y, fill=Label) ) +
@@ -377,6 +403,103 @@ tibble(X = pls_df$pls1_score, Y = pls_df$tvs_value, Label = bn_info$Yeo_7network
     axis.line = element_blank() 
   ) +
   labs(x = NULL, y = NULL)
+
+# ============================================================
+# Fast permutation test for TVS ~ PLS1
+# One-component, one-response PLS using matrix algebra
+# ============================================================
+set.seed(20260729)
+tvs_df <- read.csv( "tvs_gene_results/tvs_matched_rois.csv",check.names = FALSE)
+expr_df <- read.csv("tvs_gene_results/ahba_expression_matched.csv", check.names = FALSE)
+tvs_df <- tvs_df[  ,  !grepl("^Unnamed|^X$", colnames(tvs_df)),  drop = FALSE]
+expr_roi_id <- expr_df[[1]]
+
+X <- as.matrix(expr_df[, -1, drop = FALSE])
+y <- tvs_df$tvs_value
+
+storage.mode(X) <- "double"
+y <- as.numeric(y)
+
+X_z <- scale(X, center = TRUE, scale = TRUE)
+y_z <- as.numeric(scale(y, center = TRUE, scale = TRUE))
+# ------------------------------------------------------------
+# Fast one-component PLS1 function
+# ------------------------------------------------------------
+
+fast_pls1 <- function(X, y) {
+  w <- as.numeric(crossprod(X, y))
+  w_norm <- sqrt(sum(w^2))
+  w <- w / w_norm
+  score <- as.numeric(X %*% w)
+  # Sign alignment, matching Python script
+  r <- cor(score, y)
+  
+  if (r < 0) {
+    score <- -score
+    w <- -w
+    r <- -r
+  }
+  
+  list(
+    score = score,
+    weight = w,
+    r = r
+  )
+}
+
+# ------------------------------------------------------------
+# Calculate observed PLS1
+# ------------------------------------------------------------
+observed_fit <- fast_pls1(X_z, y_z)
+r_observed <- observed_fit$r
+cat("Observed PLS1 ~ TVS correlation:", r_observed, "\n")
+
+# ============================================================
+# Batch permutation
+# ============================================================
+set.seed(20260729)
+n_perm <- 5000
+batch_size <- 100
+n_roi <- nrow(X_z)
+n_batch <- ceiling(n_perm / batch_size)
+r_null <- numeric(n_perm)
+counter <- 1L
+start_time <- Sys.time()
+for (b in seq_len(n_batch)) {
+  current_batch <- min(   batch_size,   n_perm - counter + 1L  )
+  # Each column is one independently permuted TVS vector
+  Y_perm <- replicate(current_batch,sample(y_z, size = n_roi, replace = FALSE)))
+W_perm <- crossprod(X_z, Y_perm)
+weight_norm <- sqrt(colSums(W_perm^2))
+W_perm <- sweep(  W_perm,   MARGIN = 2,   STATS = weight_norm,  FUN = "/" )
+# ROI-level PLS1 scores for every permutation
+T_perm <- X_z %*% W_perm
+# Since every column is centered, calculate correlations directly
+numerator <- colSums(T_perm * Y_perm)
+denominator <- sqrt(  colSums(T_perm^2) *     colSums(Y_perm^2) )
+r_batch <- numerator / denominator
+# Component sign is arbitrary
+r_batch <- abs(r_batch)
+index <- counter:(counter + current_batch - 1L)
+r_null[index] <- r_batch
+counter <- counter + current_batch
+cat(  "Completed:",   min(b * batch_size, n_perm),  "/",  n_perm,    "\n"  )
+}
+
+end_time <- Sys.time()
+cat("Total running time:", as.numeric(difftime(end_time, start_time, units = "secs")),"seconds\n")
+
+# ============================================================
+# Empirical permutation P value
+# ============================================================
+r_observed_abs <- abs(r_observed)
+n_extreme <- sum( r_null >= r_observed_abs,  na.rm = TRUE)
+p_perm <- (  n_extreme + 1) / (  n_perm + 1)
+
+cat("\nObserved r =", r_observed, "\n") # r = 0.28
+cat("Extreme permutations =", n_extreme, "\n")
+cat("Number of permutations =", n_perm, "\n")
+cat("Empirical permutation P =", p_perm, "\n") # P = 0.036
 
 
 # Figure 5 I, J -----------------------------------------------------------

@@ -52,7 +52,7 @@ sd_swd = HotellingsT2(SD[, 2:3], SWD[, 2:3]) # T.2=3.70, p=0.029
 sd_health = HotellingsT2(SD[, 2:3], Health[, 2:3]) # T.2=16.80, p<0.001
 swd_health = HotellingsT2(SWD[, 2:3], Health[, 2:3]) # T.2=5.22, p=0.006
 round(p.adjust(c(sd_swd$p.value[1,1], sd_health$p.value[1,1], swd_health$p.value[1,1]), 
-         method = 'fdr'), 3)
+         method = 'fdr'), 3) # 0.029 0.000 0.008
 
 # Q2: How SD and Insomnia deviate from Health ?
 # ============================================
@@ -223,22 +223,9 @@ ggplot(results_plot, aes(x = Axis, y = Deviation, fill = Group)) +
 # ============================================
 # Summary table 
 # ============================================
-summary_table <- data.frame(
-  Group = c("SWD", "SWD", "SD", "SD"),
-  Axis = c("X", "Y", "X", "Y"),
-  Deviation = round(c(deviation_SWD[1], deviation_SWD[2],
-                      deviation_SD[1], deviation_SD[2]), 4),
-  CI_95_Lower = round(c(ci_X_SWD[1], ci_Y_SWD[1],
-                        ci_X_SD[1], ci_Y_SD[1]), 4),
-  CI_95_Upper = round(c(ci_X_SWD[2], ci_Y_SWD[2],
-                        ci_X_SD[2], ci_Y_SD[2]), 4),
-  Bootstrap_p = round(c(p_X_SWD, p_Y_SWD, p_X_SD, p_Y_SD), 4),
-  t_test_p = round(c(t_X_SWD$p.value, t_Y_SWD$p.value,
-                     t_X_SD$p.value, t_Y_SD$p.value), 4)
-)
-
-print(summary_table)
-fwrite(summary_table, 'MultipleDiseases/HC-defined normative space (bootstrap result).csv')
+Bootstrap_p = round(c(p_X_SWD, p_Y_SWD, p_X_SD, p_Y_SD), 4)
+Bootstrap_p
+# 0.0448 0.0116 0.0000 0.6620
 
 
 # Figure 3D ---------------------------------------------------------------
@@ -469,19 +456,6 @@ ggplot(results_plot, aes(x = Axis, y = Deviation, fill = Group)) +
     panel.border = element_rect(color = "black", fill = NA, linewidth = 1.2), 
   ) 
 
-# ============================================
-# Summary table 
-# ============================================
-summary_table <- data.frame(
-  Group = c("SWD", "SWD", "CFS", "CFS"),
-  Axis = c("X", "Y", "X", "Y"),
-  Deviation = round(c(deviation_SWD[1], deviation_SWD[2],
-                      deviation_CFS[1], deviation_CFS[2]), 4),
-  CI_95_Lower = round(c(ci_X_SWD[1], ci_Y_SWD[1],
-                        ci_X_CFS[1], ci_Y_CFS[1]), 4),
-  CI_95_Upper = round(c(ci_X_SWD[2], ci_Y_SWD[2],
-                        ci_X_CFS[2], ci_Y_CFS[2]), 4),
-  Bootstrap_p = round(c(p_X_SWD, p_Y_SWD, p_X_CFS, p_Y_CFS), 4)
-)
-
-print(summary_table)
+Bootstrap_p = round(c(p_X_SWD, p_Y_SWD, p_X_CFS, p_Y_CFS), 4)
+Bootstrap_p
+# [1] 0.0448 0.0116 0.0016 0.0012

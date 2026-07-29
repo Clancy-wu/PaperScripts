@@ -52,6 +52,9 @@ volcano_df$point_group <- factor(
     "FDR < 0.05, gene-analysis relevant"
   )
 )
+# Acylcarnitine / fatty-acid oxidation = 46
+# Total = 201
+# filter(volcano_df, point_group=='FDR < 0.05, gene-analysis relevant' ) = 13
 
 # =========================
 # 3. Plot volcano figure
