@@ -68,7 +68,7 @@ rotated = nulls.baum(SD_CWM, atlas='fsaverage', density='10k',
 raw_compare = stats.compare_images(SD_CWM, TVS, nulls=rotated, return_nulls=True) 
 print(raw_compare) # r=-0.23, p=0.042
 np.savez('TVS_SDCWM_SpinCorrelation_RawValueResult.npz', 
-         r_value=raw_compare[0], spin_p_value=raw_compare[1], n_perm=1000, null_values=raw_compare[2])
+         r_value=raw_compare[0], spin_p_value=raw_compare[1], n_perm=5000, null_values=raw_compare[2])
 
 ## abs value
 abs_rotated = nulls.baum(np.abs(SD_CWM), atlas='fsaverage', density='10k',
