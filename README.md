@@ -22,4 +22,7 @@ Coeruleus in Attention Decline After Acute Sleep Deprivation. Sleep Medicine. 20
 ## A-multiscale-thalamocortical-vigilance-state-captures-individual-vulnerability-to-sleep-deprivation 
 **Wu K#**, Song M#, Li K#, et al. Under review
 
+## SD-Acetate-gradient-vigilance
+Default mode network gradient reorganization mediates the association between peripheral acetate alterations and vigilance instability following sleep deprivation
+Ning YZ#, Huo BX#, Chen C#, et al. **Wu K**. Under review
 
