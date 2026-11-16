@@ -24,5 +24,11 @@ Coeruleus in Attention Decline After Acute Sleep Deprivation. Sleep Medicine. 20
 
 ## SD-Acetate-gradient-vigilance
 Default mode network gradient reorganization mediates the association between peripheral acetate alterations and vigilance instability following sleep deprivation
+
 Ning YZ#, Huo BX#, Chen C#, et al. **Wu K**. Under review
+
+## Dynamic-metabolic-states-stratify-future-metabolic-multimorbidity-risk-in-psoriasis
+Dynamic metabolic states stratify future metabolic multimorbidity risk in psoriasis: a longitudinal cohort study
+
+Zhang SX#, **Wu K#**. Under review
 
